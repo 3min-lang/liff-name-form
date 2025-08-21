@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>姓名填寫（三格）</title>
+  <style>
+    body{font-family:system-ui,-apple-system,"Noto Sans TC",Segoe UI,Roboto; margin:0; background:#f6f7f9;}
+    .wrap{max-width:560px; margin:24px auto; padding:16px;}
+    h2{font-size:20px; margin:0 0 12px;}
+    .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0 16px;}
+    label{font-size:14px; color:#333; display:block;}
+    input{width:100%; padding:12px; border:1px solid #ddd; border-radius:12px; font-size:16px; background:#fff;}
+    .hint{font-size:12px; color:#666; line-height:1.6;}
+    button{width:100%; padding:14px; border:0; border-radius:12px; background:#06c755; color:#fff; font-size:16px;}
+    .msg{margin-top:12px; font-size:14px; min-height:1.6em;}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h2>請輸入姓名</h2>
+    <div class="hint">姓與名為必填；中間字可留空。請以中文輸入。<br>（若未設定 LIFF ID 也可送出，但不會帶到 LINE 的 userId）</div>
+
+    <form id="f">
+      <div class="grid">
+        <label>姓
+          <input id="lastname" maxlength="2" autocomplete="off" placeholder="例：林" required />
+        </label>
+        <label>中間字（選填）
+          <input id="middlename" maxlength="2" autocomplete="off" placeholder="例：建" />
+        </label>
+        <label>名
+          <input id="firstname" maxlength="2" autocomplete="off" placeholder="例：宏" required />
+        </label>
+      </div>
+      <button type="submit">送出</button>
+      <div id="msg" class="msg"></div>
+    </form>
+  </main>
+
+  <!-- LIFF SDK（可先放著，沒有 LIFF ID 也會自動降級為純網頁模式） -->
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script>
+    // ====== 你的設定（已替換 Webhook；LIFF 請換成真正的 LIFF ID） ======
+    const LIFF_ID = "2007967250"; // ⚠ 這是你的「Channel ID」，LIFF 需要的是 liffId（像 2007967250-ABcdEf）。拿到後請改掉這行。
+    const N8N_WEBHOOK = "https://xin03.zeabur.app/webhook/gosubar";
+    // ============================================================
+
+    const $ = id => document.getElementById(id);
+    const show = t => { $("msg").textContent = t; };
+    const onlyCJK = s => /^[\u4e00-\u9fff]+$/.test(s);
+    const qs = k => new URL(location.href).searchParams.get(k) || "";
+
+    // 執行狀態
+    let liffReady = false;
+    let lineProfile = null;
+    let lineContext = null;
+
+    async function tryInitLIFF() {
+      try {
+        // 若 LIFF_ID 明顯不像 liffId，直接跳過初始化（避免報錯）
+        if (!/^\d{6,}-/.test(LIFF_ID)) throw new Error("Looks like a Channel ID, not a LIFF ID.");
+        await liff.init({ liffId: LIFF_ID });
+        if (!liff.isLoggedIn()) await liff.login();
+        lineProfile = await liff.getProfile().catch(() => null);
+        lineContext = liff.getContext ? liff.getContext() : null;
+        liffReady = true;
+      } catch (e) {
+        // 降級為純網頁模式
+        console.warn("[LIFF] init skipped/fallback:", e.message || e);
+        liffReady = false;
+      }
+    }
+
+    (async () => {
+      await tryInitLIFF();
+
+      $("f").addEventListener("submit", async (e) => {
+        e.preventDefault();
+
+        const ln = $("lastname").value.trim();
+        const mn = $("middlename").value.trim();
+        const fn = $("firstname").value.trim();
+
+        if (!ln || !fn) return show("姓與名為必填");
+        if (!(onlyCJK(ln) && onlyCJK(fn) && (!mn || onlyCJK(mn)))) {
+          return show("請以中文輸入，勿含空白或符號");
+        }
+
+        const payload = {
+          act: "name_submit",
+          mode: qs("mode") || "",
+          lastname: ln,
+          middlename: mn,
+          firstname: fn,
+          fullName: ln + mn + fn,
+          source: liffReady ? "liff" : "web",
+          lineUserId: liffReady && lineProfile ? lineProfile.userId : "",
+          context: liffReady && lineContext ? lineContext : null,
+          ts: Date.now()
+        };
+
+        try {
+          const res = await fetch(N8N_WEBHOOK, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          show("已送出，感謝！稍後會在聊天室收到確認訊息。");
+          setTimeout(() => { if (liffReady && liff.isInClient()) liff.closeWindow(); }, 1200);
+        } catch (err) {
+          console.error(err);
+          show("送出失敗（可能是 CORS 或伺服器問題）。請稍後再試。");
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
