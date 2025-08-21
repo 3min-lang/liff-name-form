@@ -14,6 +14,9 @@
     .hint{font-size:12px; color:#666; line-height:1.6;}
     button{width:100%; padding:14px; border:0; border-radius:12px; background:#06c755; color:#fff; font-size:16px;}
     .msg{margin-top:12px; font-size:14px; min-height:1.6em;}
+    /* 送出後的視覺鎖定 */
+    button[disabled]{opacity:.6; filter:grayscale(1); cursor:not-allowed;}
+    input[disabled]{background:#eee;}
   </style>
 </head>
 <body>
@@ -33,50 +36,75 @@
           <input id="firstname" maxlength="2" autocomplete="off" placeholder="例：宏" required />
         </label>
       </div>
-      <button type="submit">送出</button>
+      <button id="submitBtn" type="submit">送出</button>
       <div id="msg" class="msg"></div>
     </form>
   </main>
 
-  <!-- LIFF SDK（可先放著，沒有 LIFF ID 也會自動降級為純網頁模式） -->
+  <!-- LIFF SDK -->
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script>
-    // ====== 你的設定（已替換 Webhook；LIFF 請換成真正的 LIFF ID） ======
-    const LIFF_ID = "2007967250-VZ15Ew5a"; // ⚠ 這是你的「Channel ID」，LIFF 需要的是 liffId（像 2007967250-ABcdEf）。拿到後請改掉這行。
+    // ====== 設定 ======
+    const LIFF_ID = "2007967250-VZ15Ew5a";     // 你提供的 LIFF ID
     const N8N_WEBHOOK = "https://xin03.zeabur.app/webhook/gosubar";
-    // ============================================================
+    // ===================
 
     const $ = id => document.getElementById(id);
     const show = t => { $("msg").textContent = t; };
     const onlyCJK = s => /^[\u4e00-\u9fff]+$/.test(s);
     const qs = k => new URL(location.href).searchParams.get(k) || "";
 
-    // 執行狀態
-    let liffReady = false;
-    let lineProfile = null;
-    let lineContext = null;
+    // 防重複提交（前端）
+    const SUBMIT_FLAG_KEY = "name_form_submitted";
+    let liffReady = false, lineProfile = null, lineContext = null, submitting = false;
 
-    async function tryInitLIFF() {
-      try {
-        // 若 LIFF_ID 明顯不像 liffId，直接跳過初始化（避免報錯）
-        if (!/^\d{6,}-/.test(LIFF_ID)) throw new Error("Looks like a Channel ID, not a LIFF ID.");
+    function lockForm(txt="送出中…"){
+      submitting = true;
+      $("submitBtn").disabled = true;
+      $("submitBtn").textContent = txt;
+      document.querySelectorAll("input").forEach(i => i.disabled = true);
+    }
+    function unlockForm(){
+      submitting = false;
+      $("submitBtn").disabled = false;
+      $("submitBtn").textContent = "送出";
+      document.querySelectorAll("input").forEach(i => i.disabled = false);
+    }
+    function finishAndExit(){
+      localStorage.setItem(SUBMIT_FLAG_KEY, "1");
+      show("已送出，感謝！");
+      setTimeout(() => {
+        if (liffReady && liff.isInClient()) liff.closeWindow();
+        else location.replace(location.pathname + "?sent=1"); // 外部瀏覽器 → 成功狀態
+      }, 900);
+    }
+
+    async function tryInitLIFF(){
+      try{
+        if (!/^\d{6,}-/.test(LIFF_ID)) throw new Error("Not a LIFF ID");
         await liff.init({ liffId: LIFF_ID });
         if (!liff.isLoggedIn()) await liff.login();
         lineProfile = await liff.getProfile().catch(() => null);
         lineContext = liff.getContext ? liff.getContext() : null;
         liffReady = true;
-      } catch (e) {
-        // 降級為純網頁模式
-        console.warn("[LIFF] init skipped/fallback:", e.message || e);
-        liffReady = false;
+      }catch(e){
+        console.warn("[LIFF] init skipped:", e.message || e);
+        liffReady = false; // 降級為純網頁模式
       }
     }
 
     (async () => {
       await tryInitLIFF();
 
+      // 若已送出或帶 ?sent=1 → 直接鎖住畫面，避免再次提交
+      if (localStorage.getItem(SUBMIT_FLAG_KEY) === "1" || qs("sent") === "1") {
+        lockForm("已送出");
+        show("已送出，請關閉此頁。");
+      }
+
       $("f").addEventListener("submit", async (e) => {
         e.preventDefault();
+        if (submitting) return; // 防重複點擊
 
         const ln = $("lastname").value.trim();
         const mn = $("middlename").value.trim();
@@ -86,6 +114,11 @@
         if (!(onlyCJK(ln) && onlyCJK(fn) && (!mn || onlyCJK(mn)))) {
           return show("請以中文輸入，勿含空白或符號");
         }
+
+        lockForm();
+
+        // 產生一次性 nonce（後端可用來去重）
+        const nonce = `${Date.now()}-${Math.random().toString(36).slice(2,10)}`;
 
         const payload = {
           act: "name_submit",
@@ -97,21 +130,22 @@
           source: liffReady ? "liff" : "web",
           lineUserId: liffReady && lineProfile ? lineProfile.userId : "",
           context: liffReady && lineContext ? lineContext : null,
+          nonce,                               // ★ 去重用 token
           ts: Date.now()
         };
 
-        try {
+        try{
           const res = await fetch(N8N_WEBHOOK, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
           });
           if (!res.ok) throw new Error("HTTP " + res.status);
-          show("已送出，感謝！稍後會在聊天室收到確認訊息。");
-          setTimeout(() => { if (liffReady && liff.isInClient()) liff.closeWindow(); }, 1200);
-        } catch (err) {
+          finishAndExit();
+        }catch(err){
           console.error(err);
-          show("送出失敗（可能是 CORS 或伺服器問題）。請稍後再試。");
+          show("送出失敗，請檢查網路後再試。");
+          unlockForm(); // 失敗才解鎖，允許重試
         }
       });
     })();
