@@ -14,7 +14,7 @@
     .hint{font-size:12px; color:#666; line-height:1.6;}
     button{width:100%; padding:14px; border:0; border-radius:12px; background:#06c755; color:#fff; font-size:16px;}
     .msg{margin-top:12px; font-size:14px; min-height:1.6em;}
-    /* 送出後的視覺鎖定 */
+    /* 送出中的視覺鎖定（僅當次） */
     button[disabled]{opacity:.6; filter:grayscale(1); cursor:not-allowed;}
     input[disabled]{background:#eee;}
   </style>
@@ -45,17 +45,14 @@
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script>
     // ====== 設定 ======
-    const LIFF_ID = "2007967250-VZ15Ew5a";     // 你提供的 LIFF ID
+    const LIFF_ID = "2007967250-VZ15Ew5a";
     const N8N_WEBHOOK = "https://xin03.zeabur.app/webhook/gosubar";
     // ===================
 
     const $ = id => document.getElementById(id);
     const show = t => { $("msg").textContent = t; };
     const onlyCJK = s => /^[\u4e00-\u9fff]+$/.test(s);
-    const qs = k => new URL(location.href).searchParams.get(k) || "";
 
-    // 防重複提交（前端）
-    const SUBMIT_FLAG_KEY = "name_form_submitted";
     let liffReady = false, lineProfile = null, lineContext = null, submitting = false;
 
     function lockForm(txt="送出中…"){
@@ -70,12 +67,21 @@
       $("submitBtn").textContent = "送出";
       document.querySelectorAll("input").forEach(i => i.disabled = false);
     }
+    function resetForm(){
+      $("f").reset();
+    }
     function finishAndExit(){
-      localStorage.setItem(SUBMIT_FLAG_KEY, "1");
       show("已送出，感謝！");
       setTimeout(() => {
-        if (liffReady && liff.isInClient()) liff.closeWindow();
-        else location.replace(location.pathname + "?sent=1"); // 外部瀏覽器 → 成功狀態
+        if (liffReady && liff.isInClient()) {
+          // LIFF 內：直接關窗（下次再次開啟就能重新輸入，因為我們沒有持久化鎖定）
+          liff.closeWindow();
+        } else {
+          // 外部瀏覽器：清空並解鎖，讓使用者當下就能再送；重新整理也能再送
+          resetForm();
+          unlockForm();
+          show("已送出，歡迎再次填寫。");
+        }
       }, 900);
     }
 
@@ -96,12 +102,6 @@
     (async () => {
       await tryInitLIFF();
 
-      // 若已送出或帶 ?sent=1 → 直接鎖住畫面，避免再次提交
-      if (localStorage.getItem(SUBMIT_FLAG_KEY) === "1" || qs("sent") === "1") {
-        lockForm("已送出");
-        show("已送出，請關閉此頁。");
-      }
-
       $("f").addEventListener("submit", async (e) => {
         e.preventDefault();
         if (submitting) return; // 防重複點擊
@@ -117,12 +117,12 @@
 
         lockForm();
 
-        // 產生一次性 nonce（後端可用來去重）
+        // 後端去重 nonce（即便使用者重整／回上一頁也不會重複建立資料）
         const nonce = `${Date.now()}-${Math.random().toString(36).slice(2,10)}`;
 
         const payload = {
           act: "name_submit",
-          mode: qs("mode") || "",
+          mode: new URL(location.href).searchParams.get("mode") || "",
           lastname: ln,
           middlename: mn,
           firstname: fn,
@@ -130,7 +130,7 @@
           source: liffReady ? "liff" : "web",
           lineUserId: liffReady && lineProfile ? lineProfile.userId : "",
           context: liffReady && lineContext ? lineContext : null,
-          nonce,                               // ★ 去重用 token
+          nonce,
           ts: Date.now()
         };
 
