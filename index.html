@@ -17,6 +17,35 @@
     /* 送出中的視覺鎖定（僅當次） */
     button[disabled]{opacity:.6; filter:grayscale(1); cursor:not-allowed;}
     input[disabled]{background:#eee;}
+
+    /* NEW: 下方等待區塊 */
+    .pending{           /* 最外層盒子 */
+      margin-top:16px;
+      padding:16px;
+      border-radius:12px;
+      background:#fff;
+      border:1px solid #e6e6e6;
+      min-height:64px;
+      display:flex;
+      align-items:center;
+      gap:12px;
+    }
+    .pending[hidden]{ display:none; }
+    .spin{             /* 小圓圈 spinner */
+      width:22px; height:22px;
+      border-radius:50%;
+      border:3px solid #e5e5e5;
+      border-top-color:#06c755;
+      animation:spin 0.9s linear infinite;
+    }
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .pending-text{font-size:14px; color:#333; line-height:1.6;}
+    .pending-sub{font-size:12px; color:#666;}
+
+    /* 使用者若偏好減少動態，關閉旋轉 */
+    @media (prefers-reduced-motion: reduce){
+      .spin{animation:none}
+    }
   </style>
 </head>
 <body>
@@ -39,6 +68,15 @@
       <button id="submitBtn" type="submit">送出</button>
       <div id="msg" class="msg"></div>
     </form>
+
+    <!-- NEW: 底部處理中文字區（預設隱藏） -->
+    <section id="pending" class="pending" hidden aria-live="polite">
+      <div class="spin" aria-hidden="true"></div>
+      <div>
+        <div class="pending-text" id="pendingMain">正在處理中，請稍候…</div>
+        <div class="pending-sub" id="pendingSub">大約需要 10–20 秒，請勿關閉此視窗或離開此頁面。</div>
+      </div>
+    </section>
   </main>
 
   <!-- LIFF SDK -->
@@ -55,29 +93,38 @@
 
     let liffReady = false, lineProfile = null, lineContext = null, submitting = false;
 
+    /* NEW: 控制等待區顯示/隱藏 */
+    function setPending(on = true, main = "正在處理中，請稍候…", sub = "大約需要 10–20 秒，請勿關閉此視窗或離開此頁面。"){
+      const box = $("pending");
+      $("pendingMain").textContent = main;
+      $("pendingSub").textContent = sub;
+      box.hidden = !on;
+    }
+
     function lockForm(txt="送出中…"){
       submitting = true;
       $("submitBtn").disabled = true;
       $("submitBtn").textContent = txt;
       document.querySelectorAll("input").forEach(i => i.disabled = true);
+      setPending(true);           // NEW: 顯示等待區
     }
     function unlockForm(){
       submitting = false;
       $("submitBtn").disabled = false;
       $("submitBtn").textContent = "送出";
       document.querySelectorAll("input").forEach(i => i.disabled = false);
+      setPending(false);          // NEW: 隱藏等待區
     }
     function resetForm(){
       $("f").reset();
     }
     function finishAndExit(){
       show("已送出，感謝！");
+      setPending(false);          // NEW: 完成即隱藏
       setTimeout(() => {
         if (liffReady && liff.isInClient()) {
-          // LIFF 內：直接關窗（下次再次開啟就能重新輸入，因為我們沒有持久化鎖定）
           liff.closeWindow();
         } else {
-          // 外部瀏覽器：清空並解鎖，讓使用者當下就能再送；重新整理也能再送
           resetForm();
           unlockForm();
           show("已送出，歡迎再次填寫。");
@@ -117,7 +164,6 @@
 
         lockForm();
 
-        // 後端去重 nonce（即便使用者重整／回上一頁也不會重複建立資料）
         const nonce = `${Date.now()}-${Math.random().toString(36).slice(2,10)}`;
 
         const payload = {
